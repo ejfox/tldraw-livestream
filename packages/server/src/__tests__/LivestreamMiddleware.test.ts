@@ -381,6 +381,96 @@ describe('LivestreamMiddleware', () => {
     });
   });
 
+  describe('input sanitization', () => {
+    it('strips HTML from names', () => {
+      mw.onConnect('room1', 'user1', { name: '<script>alert(1)</script>Bob', color: '#ff0000' });
+      const state = mw.getRoomState('room1');
+      expect(state!.users[0].name).toBe('alert(1)Bob');
+    });
+
+    it('strips control characters from names', () => {
+      mw.onConnect('room1', 'user1', { name: 'Evil\x00\x01Name', color: '#ff0000' });
+      const state = mw.getRoomState('room1');
+      expect(state!.users[0].name).toBe('EvilName');
+    });
+
+    it('truncates long names to 30 chars', () => {
+      mw.onConnect('room1', 'user1', { name: 'A'.repeat(100), color: '#ff0000' });
+      const state = mw.getRoomState('room1');
+      expect(state!.users[0].name.length).toBeLessThanOrEqual(30);
+    });
+
+    it('falls back to Anonymous for empty names', () => {
+      mw.onConnect('room1', 'user1', { name: '   ', color: '#ff0000' });
+      const state = mw.getRoomState('room1');
+      expect(state!.users[0].name).toBe('Anonymous');
+    });
+
+    it('rejects invalid color formats', () => {
+      mw.onConnect('room1', 'user1', { name: 'Test', color: 'not-a-color' });
+      const state = mw.getRoomState('room1');
+      expect(state!.users[0].color).toBe('#3b82f6'); // default
+    });
+
+    it('accepts valid hex colors', () => {
+      mw.onConnect('room1', 'user1', { name: 'Test', color: '#abcdef' });
+      const state = mw.getRoomState('room1');
+      expect(state!.users[0].color).toBe('#abcdef');
+    });
+  });
+
+  describe('re-join protection', () => {
+    it('rejects livestream:join from already-connected client', () => {
+      mw.onConnect('room1', 'user1', { name: 'Alice', color: '#ff0000' });
+      const result = mw.onMessage('room1', 'user1', {
+        type: 'livestream:join',
+        name: 'Impersonator',
+        color: '#00ff00',
+        hostToken: 'secret123', // try to re-assert host
+      });
+      expect(result.allowed).toBe(false);
+    });
+  });
+
+  describe('role validation', () => {
+    beforeEach(() => {
+      mw.onConnect('room1', 'host', { name: 'Host', color: '#f00', hostToken: 'secret123' });
+      mw.onConnect('room1', 'user1', { name: 'User', color: '#0f0' });
+    });
+
+    it('rejects invalid role values', () => {
+      const result = mw.onMessage('room1', 'host', {
+        type: 'livestream:set-role',
+        userId: 'user1',
+        role: 'superadmin',
+      });
+      expect(result.allowed).toBe(false);
+    });
+
+    it('rejects empty role', () => {
+      const result = mw.onMessage('room1', 'host', {
+        type: 'livestream:set-role',
+        userId: 'user1',
+        role: '',
+      });
+      expect(result.allowed).toBe(false);
+    });
+  });
+
+  describe('chat uses separate rate limiter', () => {
+    it('chat is not blocked by shape rate limit', () => {
+      mw.onConnect('room1', 'editor', { name: 'Editor', color: '#f00' });
+      // Exhaust shape rate limit
+      for (let i = 0; i < 5; i++) {
+        mw.onMessage('room1', 'editor', { type: 'update', shapes: {} });
+      }
+      expect(mw.onMessage('room1', 'editor', { type: 'update', shapes: {} }).allowed).toBe(false);
+      // Chat should still work
+      const chatResult = mw.onMessage('room1', 'editor', { type: 'livestream:chat', text: 'hi' });
+      expect(chatResult.broadcast).toBeDefined();
+    });
+  });
+
   describe('auto-host without hostToken', () => {
     it('first user becomes host when no hostToken configured', () => {
       const noTokenMw = createLivestreamMiddleware({ defaultRole: 'editor' });

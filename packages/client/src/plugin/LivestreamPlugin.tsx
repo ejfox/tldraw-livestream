@@ -130,6 +130,22 @@ export function LivestreamPlugin({ ws, userId, config: userConfig, onKicked, chi
     [ws]
   );
 
+  // Listen for keyboard shortcut custom events from livestreamOverrides
+  useEffect(() => {
+    function handleFreeze() {
+      send({ type: 'livestream:mod-action', action: state.frozen ? 'unfreeze' : 'freeze' });
+    }
+    function handleSnapshot() {
+      send({ type: 'livestream:mod-action', action: 'snapshot' });
+    }
+    window.addEventListener('livestream:toggle-freeze', handleFreeze);
+    window.addEventListener('livestream:save-snapshot', handleSnapshot);
+    return () => {
+      window.removeEventListener('livestream:toggle-freeze', handleFreeze);
+      window.removeEventListener('livestream:save-snapshot', handleSnapshot);
+    };
+  }, [send, state.frozen]);
+
   const actions = useMemo(
     () => ({
       modAction: (action: string, target?: string, snapshotId?: string, reason?: string) => {

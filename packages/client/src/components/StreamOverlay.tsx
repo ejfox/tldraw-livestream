@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useLivestreamState } from '../plugin/useLivestreamContext';
 import { ROLE_LEVEL } from '../types';
 
@@ -42,46 +42,55 @@ export function StreamOverlay({
 }: StreamOverlayProps) {
   const { users, frozen, role } = useLivestreamState();
   const [recentEvents, setRecentEvents] = useState<Array<{ id: string; text: string; color: string }>>([]);
-  const [prevUserIds, setPrevUserIds] = useState<Set<string>>(new Set());
+  const prevUserIdsRef = useRef<Set<string> | null>(null);
+  const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
-  // Track joins and leaves
+  // Clean up timers on unmount
+  useEffect(() => {
+    return () => {
+      timersRef.current.forEach((t) => clearTimeout(t));
+    };
+  }, []);
+
+  // Track joins and leaves — skip first render (no "50 people joined" spam)
   useEffect(() => {
     if (!showJoinLeave) return;
 
     const currentIds = new Set(users.map((u) => u.id));
 
+    // Skip first render — initialize the set without firing events
+    if (prevUserIdsRef.current === null) {
+      prevUserIdsRef.current = currentIds;
+      return;
+    }
+
+    const prevUserIds = prevUserIdsRef.current;
+
+    const addEvent = (event: { id: string; text: string; color: string }) => {
+      setRecentEvents((prev) => [...prev.slice(-4), event]);
+      const timer = setTimeout(() => {
+        setRecentEvents((prev) => prev.filter((e) => e.id !== event.id));
+        timersRef.current.delete(timer);
+      }, 3000);
+      timersRef.current.add(timer);
+    };
+
     // Detect joins
     for (const user of users) {
       if (!prevUserIds.has(user.id)) {
-        const event = {
-          id: `join-${user.id}-${Date.now()}`,
-          text: `${user.name} joined`,
-          color: user.color,
-        };
-        setRecentEvents((prev) => [...prev.slice(-4), event]);
-        setTimeout(() => {
-          setRecentEvents((prev) => prev.filter((e) => e.id !== event.id));
-        }, 3000);
+        addEvent({ id: `join-${user.id}-${Date.now()}`, text: `${user.name} joined`, color: user.color });
       }
     }
 
     // Detect leaves
     for (const prevId of prevUserIds) {
       if (!currentIds.has(prevId)) {
-        const event = {
-          id: `leave-${prevId}-${Date.now()}`,
-          text: 'someone left',
-          color: '#6b7280',
-        };
-        setRecentEvents((prev) => [...prev.slice(-4), event]);
-        setTimeout(() => {
-          setRecentEvents((prev) => prev.filter((e) => e.id !== event.id));
-        }, 3000);
+        addEvent({ id: `leave-${prevId}-${Date.now()}`, text: 'someone left', color: '#6b7280' });
       }
     }
 
-    setPrevUserIds(currentIds);
-  }, [users, showJoinLeave]); // eslint-disable-line react-hooks/exhaustive-deps
+    prevUserIdsRef.current = currentIds;
+  }, [users, showJoinLeave]);
 
   const isRight = position.includes('right');
   const isBottom = position.includes('bottom');
@@ -105,7 +114,6 @@ export function StreamOverlay({
         @keyframes lso-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
         @keyframes lso-glow { 0%,100% { box-shadow: 0 0 6px rgba(239,68,68,0.4); } 50% { box-shadow: 0 0 18px rgba(239,68,68,0.6); } }
         @keyframes lso-slide-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes lso-slide-out { from { opacity: 1; } to { opacity: 0; transform: translateY(-4px); } }
       `}</style>
 
       <div style={containerStyle} className={className}>

@@ -20,8 +20,7 @@ export function ChatOverlay() {
   const [open, setOpen] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  if (!config.enableChat) return null;
-
+  // All hooks must be above the early return (React rules of hooks)
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages.length]);
@@ -37,6 +36,8 @@ export function ChatOverlay() {
     },
     [text, actions]
   );
+
+  if (!config.enableChat) return null;
 
   if (!open) {
     return (

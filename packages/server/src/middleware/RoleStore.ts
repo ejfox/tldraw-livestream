@@ -44,7 +44,7 @@ export class RoleStore {
   }
 
   getAll(): LivestreamUser[] {
-    return Array.from(this.users.values());
+    return Array.from(this.users.values()).map((u) => ({ ...u }));
   }
 
   count(): number {

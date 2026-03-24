@@ -4,6 +4,24 @@ import { RateLimiter } from './RateLimiter';
 import { RoleStore } from './RoleStore';
 import { BanList } from './BanList';
 
+const VALID_ROLES = new Set<string>(['host', 'moderator', 'editor', 'viewer']);
+const MAX_ROOMS = 10_000;
+const MAX_NAME_LENGTH = 30;
+
+/** Strip HTML tags and control characters from user-provided names */
+function sanitizeName(raw: string): string {
+  return raw
+    .replace(/<[^>]*>/g, '')         // strip HTML tags
+    .replace(/[\x00-\x1f\x7f]/g, '') // strip control chars
+    .trim()
+    .slice(0, MAX_NAME_LENGTH) || 'Anonymous';
+}
+
+/** Validate color is a hex color, fallback to default */
+function sanitizeColor(raw: string): string {
+  return /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : '#3b82f6';
+}
+
 export interface MiddlewareResult {
   /** Whether to pass the message through to the underlying sync handler */
   allowed: boolean;
@@ -53,12 +71,17 @@ export class LivestreamMiddleware {
   private rooms: Map<string, {
     roles: RoleStore;
     rateLimiter: RateLimiter;
+    chatLimiter: RateLimiter;
     banList: BanList;
     frozen: boolean;
   }> = new Map();
 
-  /** Optional snapshot provider — set this to enable rollback */
-  snapshotProvider: SnapshotProvider | null = null;
+  private _snapshotProvider: SnapshotProvider | null = null;
+
+  /** Set a snapshot provider to enable rollback */
+  setSnapshotProvider(provider: SnapshotProvider): void {
+    this._snapshotProvider = provider;
+  }
 
   constructor(config?: LivestreamConfig) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -67,9 +90,11 @@ export class LivestreamMiddleware {
   private getRoom(roomId: string) {
     let room = this.rooms.get(roomId);
     if (!room) {
+      if (this.rooms.size >= MAX_ROOMS) return null;
       room = {
         roles: new RoleStore(),
         rateLimiter: new RateLimiter(this.config.rateLimitMax, this.config.rateLimitWindow),
+        chatLimiter: new RateLimiter(Math.max(5, Math.floor(this.config.rateLimitMax / 5)), this.config.rateLimitWindow),
         banList: new BanList(this.config.onBan, this.config.isBanned),
         frozen: false,
       };
@@ -81,6 +106,13 @@ export class LivestreamMiddleware {
   /** Call when a client connects */
   onConnect(roomId: string, clientId: string, meta: { name: string; color: string; hostToken?: string; ip?: string }): MiddlewareResult {
     const room = this.getRoom(roomId);
+    if (!room) {
+      return { allowed: false, respondToSender: { type: 'livestream:kicked', reason: 'Server room limit reached' } };
+    }
+
+    // Sanitize inputs (belt-and-suspenders — handleJoin also sanitizes, but onConnect is public API)
+    meta.name = sanitizeName(meta.name);
+    meta.color = sanitizeColor(meta.color);
 
     // Check ban
     if (room.banList.isBanned(clientId, meta.ip)) {
@@ -173,6 +205,7 @@ export class LivestreamMiddleware {
 
   private handleSyncMessage(roomId: string, clientId: string, type: string, _msg: Record<string, unknown>): MiddlewareResult {
     const room = this.getRoom(roomId);
+    if (!room) return { allowed: false };
     const role = room.roles.getRole(clientId);
     if (!role) return { allowed: false };
 
@@ -212,16 +245,21 @@ export class LivestreamMiddleware {
   }
 
   private handleJoin(roomId: string, clientId: string, msg: Record<string, unknown>): MiddlewareResult {
-    // Re-process as connect with the join metadata
+    const room = this.rooms.get(roomId);
+    // Reject re-join if already connected — prevents role re-assertion attacks
+    if (room?.roles.get(clientId)) {
+      return { allowed: false };
+    }
     return this.onConnect(roomId, clientId, {
-      name: (msg.name as string) || 'Anonymous',
-      color: (msg.color as string) || '#3b82f6',
+      name: sanitizeName((msg.name as string) || 'Anonymous'),
+      color: sanitizeColor((msg.color as string) || '#3b82f6'),
       hostToken: msg.hostToken as string | undefined,
     });
   }
 
   private handleModAction(roomId: string, clientId: string, msg: Record<string, unknown>): MiddlewareResult {
     const room = this.getRoom(roomId);
+    if (!room) return { allowed: false };
     const role = room.roles.getRole(clientId);
     if (!role || !canModerate(role)) {
       return { allowed: false };
@@ -280,8 +318,8 @@ export class LivestreamMiddleware {
         return { allowed: false };
 
       case 'snapshot':
-        if (this.snapshotProvider) {
-          const meta = this.snapshotProvider.save(roomId, clientId);
+        if (this._snapshotProvider) {
+          const meta = this._snapshotProvider.save(roomId, clientId);
           return {
             allowed: false,
             broadcast: [{ type: 'livestream:snapshot-created', id: meta.id, timestamp: meta.timestamp }],
@@ -290,8 +328,8 @@ export class LivestreamMiddleware {
         return { allowed: false };
 
       case 'rollback':
-        if (this.snapshotProvider && msg.snapshotId) {
-          const data = this.snapshotProvider.restore(roomId, msg.snapshotId as string);
+        if (this._snapshotProvider && msg.snapshotId) {
+          const data = this._snapshotProvider.restore(roomId, msg.snapshotId as string);
           if (data) {
             return {
               allowed: false,
@@ -308,6 +346,7 @@ export class LivestreamMiddleware {
 
   private handleSetRole(roomId: string, clientId: string, msg: Record<string, unknown>): MiddlewareResult {
     const room = this.getRoom(roomId);
+    if (!room) return { allowed: false };
     const role = room.roles.getRole(clientId);
 
     // Only host can change roles
@@ -316,24 +355,26 @@ export class LivestreamMiddleware {
     }
 
     const targetId = msg.userId as string;
-    const newRole = msg.role as Role;
+    const newRole = msg.role as string;
 
     if (!targetId || !newRole) return { allowed: false };
+    if (!VALID_ROLES.has(newRole)) return { allowed: false };
 
     // Can't make someone else host (for now)
     if (newRole === 'host') return { allowed: false };
 
-    room.roles.setRole(targetId, newRole);
+    room.roles.setRole(targetId, newRole as Role);
 
     return {
       allowed: false,
-      sendTo: [[targetId, { type: 'livestream:role-assigned', role: newRole, userId: targetId }]],
+      sendTo: [[targetId, { type: 'livestream:role-assigned', role: newRole as Role, userId: targetId }]],
       broadcast: [{ type: 'livestream:users', users: room.roles.getAll() }],
     };
   }
 
   private handleSpotlight(roomId: string, clientId: string, msg: Record<string, unknown>): MiddlewareResult {
     const room = this.getRoom(roomId);
+    if (!room) return { allowed: false };
     const role = room.roles.getRole(clientId);
     if (!role || !isHost(role)) return { allowed: false };
 
@@ -345,14 +386,15 @@ export class LivestreamMiddleware {
 
   private handleChat(roomId: string, clientId: string, msg: Record<string, unknown>): MiddlewareResult {
     const room = this.getRoom(roomId);
+    if (!room) return { allowed: false };
     const user = room.roles.get(clientId);
     if (!user) return { allowed: false };
 
     const text = (msg.text as string || '').trim().slice(0, 500);
     if (!text) return { allowed: false };
 
-    // Rate limit chat too (reuses same limiter)
-    if (!room.rateLimiter.check(clientId)) {
+    // Separate chat rate limiter so shape edits don't block chat and vice versa
+    if (!room.chatLimiter.check(clientId)) {
       return { allowed: false };
     }
 
