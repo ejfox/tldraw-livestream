@@ -22,6 +22,16 @@ function sanitizeColor(raw: string): string {
   return /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : '#3b82f6';
 }
 
+/** Constant-time string comparison to prevent timing attacks on hostToken */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+}
+
 export interface MiddlewareResult {
   /** Whether to pass the message through to the underlying sync handler */
   allowed: boolean;
@@ -125,7 +135,7 @@ export class LivestreamMiddleware {
 
     // Determine role
     let role: Role = this.config.defaultRole;
-    if (this.config.hostToken && meta.hostToken === this.config.hostToken) {
+    if (this.config.hostToken && meta.hostToken && timingSafeEqual(meta.hostToken, this.config.hostToken)) {
       role = 'host';
     } else if (!room.roles.hasHost()) {
       // First user becomes host if no host token is configured

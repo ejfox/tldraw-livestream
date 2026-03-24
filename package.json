@@ -2,11 +2,12 @@
   "name": "tldraw-livestream",
   "private": true,
   "workspaces": [
+    "packages/shared",
     "packages/client",
     "packages/server"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "npm run build -w packages/shared && npm run build -w packages/client && npm run build -w packages/server",
     "dev": "npm run dev --workspaces --if-present",
     "lint": "tsc --noEmit --workspaces",
     "test": "vitest run"

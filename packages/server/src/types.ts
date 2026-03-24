@@ -1,45 +1,27 @@
-/** Re-export shared types for server consumers */
+// Re-export everything from shared — single source of truth
+export {
+  type Role,
+  ROLE_LEVEL,
+  canEdit,
+  canModerate,
+  isHost,
+  type LivestreamUser,
+  type ModAction,
+  type SpotlightBounds,
+  type ChatMessage,
+  type SnapshotMeta,
+  type ServerMessage,
+  type ClientMessage,
+  type LivestreamConfigBase,
+  DEFAULT_CONFIG_BASE,
+} from '@tldraw-livestream/shared';
 
-export type Role = 'host' | 'moderator' | 'editor' | 'viewer';
+import type { LivestreamConfigBase } from '@tldraw-livestream/shared';
 
-export const ROLE_LEVEL: Record<Role, number> = {
-  host: 3,
-  moderator: 2,
-  editor: 1,
-  viewer: 0,
-};
+// --- Server-specific config extensions ---
 
-export function canEdit(role: Role): boolean {
-  return ROLE_LEVEL[role] >= ROLE_LEVEL.editor;
-}
-
-export function canModerate(role: Role): boolean {
-  return ROLE_LEVEL[role] >= ROLE_LEVEL.moderator;
-}
-
-export function isHost(role: Role): boolean {
-  return role === 'host';
-}
-
-export interface LivestreamUser {
-  id: string;
-  name: string;
-  color: string;
-  role: Role;
-  joinedAt: number;
-}
-
-export interface LivestreamConfig {
-  /** Default role for new joiners */
-  defaultRole?: Role;
-  /** Max shape operations per rate limit window */
-  rateLimitMax?: number;
-  /** Rate limit window in ms */
-  rateLimitWindow?: number;
-  /** Auto-snapshot interval in ms (0 to disable) */
-  snapshotInterval?: number;
-  /** Max snapshots to keep */
-  maxSnapshots?: number;
+/** Server middleware configuration */
+export interface LivestreamConfig extends LivestreamConfigBase {
   /** Secret token that grants host role */
   hostToken?: string;
   /** Called when a user is banned — persist however you like */
@@ -58,29 +40,3 @@ export const DEFAULT_CONFIG: Required<Omit<LivestreamConfig, 'onBan' | 'isBanned
   onBan: undefined,
   isBanned: undefined,
 };
-
-export type ModAction = 'kick' | 'ban' | 'freeze' | 'unfreeze' | 'rollback' | 'undo-user' | 'snapshot';
-
-export interface SpotlightBounds {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-export interface ChatMessage {
-  id: string;
-  userId: string;
-  userName: string;
-  userColor: string;
-  text: string;
-  timestamp: number;
-}
-
-export interface SnapshotMeta {
-  id: string;
-  timestamp: number;
-  userCount: number;
-  shapeCount: number;
-  triggeredBy: string;
-}

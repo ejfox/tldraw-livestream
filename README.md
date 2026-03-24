@@ -8,22 +8,24 @@ A plugin for [tldraw](https://tldraw.dev) that adds collaborative livestream can
 - **Role-based permissions** — Host, Moderator, Editor, Viewer
 - **Canvas freeze** — instantly lock editing for non-moderators
 - **Kick/ban** — remove disruptive users
-- **Rate limiting** — prevent shape spam (server-authoritative)
+- **Rate limiting** — prevent shape spam (server-authoritative, separate limits for shapes and chat)
 - **Snapshots & rollback** — save/restore canvas state
 - **Spotlight** — host can highlight areas for viewers to see
 - **Chat overlay** — built-in chat on the canvas
 - **Spectator bar** — live viewer count, role badges, user avatars
+- **OBS stream overlay** — standalone transparent overlay component for OBS browser source
 
 ## Architecture
 
-Two packages that work together:
+Three packages in a monorepo:
 
 | Package | Purpose |
 |---------|---------|
+| `@tldraw-livestream/shared` | Shared types, role utilities, and WS protocol definitions |
 | `@tldraw-livestream/client` | React components + tldraw hooks for the frontend |
 | `@tldraw-livestream/server` | WebSocket middleware for server-authoritative moderation |
 
-The **client** provides UX and optimistic enforcement (disables tools for viewers, shows overlays). The **server** is the authoritative enforcer — a malicious client can't bypass role checks.
+The **client** provides UX and optimistic enforcement (disables tools for viewers, shows overlays). The **server** is the authoritative enforcer — a malicious client can't bypass role checks. Both import types from **shared** so protocol definitions are always in sync.
 
 ## Quick Start
 
@@ -35,9 +37,14 @@ npm install @tldraw-livestream/client @tldraw-livestream/server
 
 ### Client Setup
 
-Wrap your `<Tldraw>` component:
+The plugin has two layers:
+
+1. `<LivestreamPlugin>` — wraps your app, provides context and handles WS messages
+2. `useRoleEnforcement()` / `useRateLimiter()` — must be called **inside** the `<Tldraw>` component tree (they need `useEditor()`)
 
 ```tsx
+import { useState } from 'react';
+import { Tldraw } from 'tldraw';
 import {
   LivestreamPlugin,
   livestreamComponents,
@@ -64,23 +71,26 @@ function App() {
   if (!joined) return <NamePicker onJoin={handleJoin} roomName="My Livestream" />;
 
   return (
-    <LivestreamPlugin ws={ws} userId={userId}>
+    <LivestreamPlugin ws={ws} userId={userId} onKicked={() => setJoined(false)}>
       <Tldraw
         components={livestreamComponents}
         overrides={[livestreamOverrides]}
-        onMount={(editor) => {
-          // Role enforcement and rate limiting are handled by hooks
-          // inside LivestreamPlugin context
-        }}
-      />
+      >
+        {/* This component MUST be a child of <Tldraw> — it calls useEditor() */}
+        <LivestreamEnforcement />
+      </Tldraw>
     </LivestreamPlugin>
   );
 }
 
-// Inside your tldraw onMount or a component inside <Tldraw>:
+/**
+ * Mounts inside <Tldraw> to enforce roles on the editor instance.
+ * Without this, role checks only happen server-side (which is still safe,
+ * but the client UX won't reflect the restrictions).
+ */
 function LivestreamEnforcement() {
-  useRoleEnforcement(); // enforces readonly for viewers, freeze, etc.
-  useRateLimiter();     // client-side rate limit warnings
+  useRoleEnforcement(); // sets readonly for viewers, blocks edits when frozen
+  useRateLimiter();     // warns when approaching server-side rate limit
   return null;
 }
 ```
@@ -104,6 +114,7 @@ const connectResult = livestream.onConnect(roomId, clientId, {
   name: userName,
   color: userColor,
   hostToken: queryParams.hostToken,
+  ip: request.ip, // optional, used for IP bans
 });
 // Send connectResult.sendTo messages, broadcast connectResult.broadcast
 
@@ -111,9 +122,9 @@ const connectResult = livestream.onConnect(roomId, clientId, {
 const result = livestream.onMessage(roomId, clientId, parsedMessage);
 
 if (!result.allowed) {
-  // Send result.respondToSender back to the client
-  // Broadcast result.broadcast to all room clients
-  // Disconnect result.disconnect clients
+  // Send result.respondToSender back to the client if present
+  // Broadcast result.broadcast to all room clients if present
+  // Disconnect result.disconnect clients if present
   return; // don't pass to your sync handler
 }
 
@@ -123,6 +134,23 @@ if (!result.allowed) {
 // When a client disconnects:
 const disconnectResult = livestream.onDisconnect(roomId, clientId);
 // Broadcast disconnectResult.broadcast
+```
+
+### OBS Stream Overlay
+
+For streamers, `StreamOverlay` is designed as a standalone OBS browser source. It renders on a transparent background with just the LIVE badge, viewer count, and join/leave toasts:
+
+```tsx
+import { LivestreamPlugin, StreamOverlay } from '@tldraw-livestream/client';
+
+// Mount this on a separate route (e.g., /stream-overlay) and add as OBS browser source
+function StreamOverlayPage() {
+  return (
+    <LivestreamPlugin ws={ws} userId="overlay">
+      <StreamOverlay position="top-right" showActivity showJoinLeave />
+    </LivestreamPlugin>
+  );
+}
 ```
 
 ## Roles
@@ -142,35 +170,71 @@ All components are individually importable for custom layouts:
 
 ```tsx
 import {
-  SpectatorBar,    // Viewer count, role badge, avatars
-  ModToolbar,      // Host/mod panel: freeze, kick, snapshots
-  ChatOverlay,     // Chat panel
-  FreezeOverlay,   // "Canvas frozen" banner
-  SpotlightOverlay,// Host highlight rectangle
-  NamePicker,      // Pre-join name/color picker
+  SpectatorBar,     // Viewer count, role badge, avatars, join toasts
+  ModToolbar,       // Host/mod panel: freeze, kick, snapshots, role management
+  ChatOverlay,      // Chat panel with slide-in messages
+  FreezeOverlay,    // Scan line + "canvas frozen" banner
+  SpotlightOverlay, // Host highlight rectangle
+  NamePicker,       // Pre-join lobby: name + color picker
+  StreamOverlay,    // OBS-ready transparent overlay (LIVE badge + count)
 } from '@tldraw-livestream/client';
 ```
 
 Or use the pre-composed `livestreamComponents` which maps them to tldraw's `TopPanel`, `InFrontOfTheCanvas`, and `SharePanel` slots.
 
+## Keyboard Shortcuts
+
+| Shortcut | Action | Requires |
+|----------|--------|----------|
+| `Ctrl+Shift+F` | Toggle canvas freeze | Host or Moderator |
+| `Ctrl+Shift+S` | Save snapshot | Host or Moderator |
+
 ## Protocol
 
-The plugin extends whatever WebSocket protocol you use with `livestream:*` message types. See [types.ts](packages/client/src/types.ts) for the full protocol definition.
+The plugin extends whatever WebSocket protocol you use with `livestream:*` message types. See [shared/src/index.ts](packages/shared/src/index.ts) for the full protocol definition.
 
 ## Configuration
 
+Client and server have separate config interfaces that share a common base:
+
 ```ts
+// Client config (@tldraw-livestream/client)
 interface LivestreamConfig {
   defaultRole?: Role;          // Default: 'editor'
   rateLimitMax?: number;       // Default: 50
   rateLimitWindow?: number;    // Default: 10000 (ms)
-  enableChat?: boolean;        // Default: true
-  enableSpotlight?: boolean;   // Default: true
   snapshotInterval?: number;   // Default: 60000 (ms, 0 to disable)
   maxSnapshots?: number;       // Default: 20
-  hostToken?: string;          // Server only — secret for host auth
+  enableChat?: boolean;        // Default: true (client only)
+  enableSpotlight?: boolean;   // Default: true (client only)
+}
+
+// Server config (@tldraw-livestream/server)
+interface LivestreamConfig {
+  defaultRole?: Role;          // Default: 'editor'
+  rateLimitMax?: number;       // Default: 50
+  rateLimitWindow?: number;    // Default: 10000 (ms)
+  snapshotInterval?: number;   // Default: 60000 (ms, 0 to disable)
+  maxSnapshots?: number;       // Default: 20
+  hostToken?: string;          // Secret for host authentication (server only)
+  onBan?: (userId, ip?) => void;   // Ban persistence callback (server only)
+  isBanned?: (userId, ip?) => boolean; // Ban check callback (server only)
 }
 ```
+
+## Security
+
+- **Server-authoritative**: All role checks, rate limiting, and freeze enforcement happen server-side. Client enforcement is UX sugar.
+- **Input sanitization**: Names are stripped of HTML tags and control characters. Colors are validated as hex format. Role values are validated against an enum.
+- **Rate limiting**: Shape edits and chat messages have separate rate limit pools so chat spam can't block drawing.
+- **Timing-safe token comparison**: `hostToken` is compared using constant-time comparison to prevent timing attacks.
+- **Room limits**: Server caps at 10,000 concurrent rooms to prevent memory exhaustion.
+- **Re-join protection**: Already-connected clients can't re-send `livestream:join` to re-assert a host role.
+
+## Known Limitations
+
+- **Bans are in-memory by default.** They don't survive server restarts and are scoped per room instance. Use the `onBan`/`isBanned` callbacks to persist bans to your own storage (database, Redis, etc.).
+- **No per-room config.** All rooms share the same middleware config. If you need different rate limits per room, create multiple middleware instances.
 
 ## License
 

@@ -22,17 +22,21 @@ export { livestreamOverrides } from './overrides/livestreamActions';
 // Snapshot manager
 export { SnapshotManager } from './snapshots/SnapshotManager';
 
-// Types
+// Types — client-specific config
+export type { LivestreamConfig } from './types';
+export { DEFAULT_CONFIG } from './types';
+
+// Types — re-export shared types so consumers don't need to install @tldraw-livestream/shared
 export type {
   Role,
   LivestreamUser,
-  LivestreamConfig,
   ServerMessage,
   ClientMessage,
   ModAction,
   SpotlightBounds,
   ChatMessage,
   SnapshotMeta,
-} from './types';
+  LivestreamConfigBase,
+} from '@tldraw-livestream/shared';
 
-export { ROLE_LEVEL, canEdit, canModerate, isHost, DEFAULT_CONFIG } from './types';
+export { ROLE_LEVEL, canEdit, canModerate, isHost, DEFAULT_CONFIG_BASE } from '@tldraw-livestream/shared';
