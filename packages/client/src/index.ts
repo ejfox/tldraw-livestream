@@ -13,6 +13,7 @@ export { NamePicker } from './components/NamePicker';
 export { ModToolbar } from './components/ModToolbar';
 export { ChatOverlay } from './components/ChatOverlay';
 export { SpotlightOverlay } from './components/SpotlightOverlay';
+export { StreamOverlay } from './components/StreamOverlay';
 
 // tldraw overrides (compose with your own)
 export { livestreamComponents } from './overrides/livestreamComponents';

@@ -54,7 +54,7 @@ export function useRoleEnforcement() {
 
     const removeDelete = editor.sideEffects.registerBeforeDeleteHandler('shape', (shape, source) => {
       if (source === 'user') return false; // block deletion
-      return true;
+      // return void to allow
     });
 
     return () => {
